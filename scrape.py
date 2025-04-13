@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from scraping_utils.scraping_utils import compute_file_hashes, DownloadThread, multithread_download_urls_special, IMG_EXTS, VID_EXTS, TOO_MANY_REQUESTS, NOT_FOUND, CONNECTION_RESET, THROTTLE_TIME
 from sys import stderr, stdout, argv, maxsize
 from hashlib import md5, sha256
@@ -6,6 +8,7 @@ import os
 import time
 import re
 import requests
+import xattr
 
 
 POSTS_PER_FETCH = 50
@@ -72,11 +75,36 @@ class CoomerThread(DownloadThread):
         # Craft the file name and its temporary name
         out_name = os.path.join(self.dst, self.name)
         tmp_name = f'{out_name}.part'
+        out_size = 0
+        tmp_size = 0
+
+        try:
+            out_size = os.path.getsize(out_name)
+        except Exception as e:
+            pass
+
+        try:
+            tmp_size = os.path.getsize(tmp_name)
+        except Exception as e:
+            pass
+
+        if ( out_size > 0 and out_size > tmp_size ):
+            try:
+                #os.remove(tmp_name)
+                os.rename(tmp_name, tmp_name + ".small" )
+            except:
+                pass
+
+            os.rename(out_name, tmp_name)
+            tmp_size = out_size
+            
 
         # Establish the streamed connection
         self.status = self.CONNECTING
-        res = self.establish_stream()
+        #res = self.establish_stream()
+        res = self.establish_stream(start=tmp_size)
         if(res is None or self.status == self.ERROR):
+            stdout.write( "\nDPD: setting error after first self.establish_stream\n\n" );
             return
 
         # Track if hashing has occurred
@@ -85,7 +113,8 @@ class CoomerThread(DownloadThread):
 
         # Open the temporary file
         chunk_size = 1024 * 1024 * 2
-        with open(tmp_name, 'wb') as tmp_file:
+        #with open(tmp_name, 'wb') as tmp_file:
+        with open(tmp_name, 'ab') as tmp_file:
             # Download in chunks
             while(True):
                 # Try to download the next chunk
@@ -104,6 +133,7 @@ class CoomerThread(DownloadThread):
                     res.close()
                     res = self.establish_stream(start=os.path.getsize(tmp_name))
                     if(res is None or self.status == self.ERROR):
+                        stdout.write( "\nDPD: setting error after self.establish_stream\n\n" );
                         self.status = self.ERROR
                         break
 
@@ -129,18 +159,33 @@ class CoomerThread(DownloadThread):
 
         # On unrecoverable error, remove temp file
         if(self.status == self.ERROR):
-            os.remove(tmp_name)
-            if(did_hash): os.remove(out_name)
+            #os.remove(tmp_name)
+            #if(did_hash): os.remove(out_name)
             return
 
         # Handle file renaming with consideration to duplicate files
         self.status = self.WRITING
-        if(is_duplicate):
-            os.remove(tmp_name)
-        else:
-            try: os.remove(out_name)
-            except: pass
-            os.rename(tmp_name, out_name)
+        #if(is_duplicate):
+            #os.remove(tmp_name)
+        #    pass
+        #else:
+        #    pass
+            #try:
+                #os.rename( out_name, out_name + ".dup" )
+                #os.remove(out_name)
+            #except:
+            #    pass
+        #else
+
+        if os.path.isfile(out_name) :
+            os.rename( out_name, out_name + ".dup" )
+
+        os.rename(tmp_name, out_name)
+
+        out_attr = xattr.xattr( out_name )
+        out_attr['dpd.origin.url'] = self.url.encode('utf-8')
+        out_attr['dpd.coomer.name'] = self.name.encode('utf-8')
+
         self.status = self.FINISHED
 
 
@@ -164,7 +209,8 @@ def delete_download_artifacts(path):
     if(not os.path.isdir(path)): return
     for f in os.listdir(path):
         f_path = os.path.join(path, f)
-        if(os.path.isfile(f_path) and (f_path.endswith('.part') or os.stat(f_path).st_size == 0)):
+        #if(os.path.isfile(f_path) and (f_path.endswith('.part') or os.stat(f_path).st_size == 0)):
+        if(os.path.isfile(f_path) and os.stat(f_path).st_size == 0):
             os.remove(f_path)
     return
 
@@ -324,6 +370,8 @@ def process_post(url, dst, imgs, vids, full_hash):
         return
     post = [res.json()]
 
+    stdout.write(f'\n[process_post] {post}\n')
+
     # Get the named media URLs
     stdout.write(f'\n[process_post] INFO: Parsing media from 1 post.\n')
     named_urls = parse_posts(base_url, post, imgs, vids)
@@ -428,7 +476,7 @@ def main(url, dst, imgs, vids, start_offs, end_offs, full_hash):
             return
 
     # Sanitize the URL
-    url = 'https://www.' + re.sub('(www\.)|(https?://)', '', url)
+    url = 'https://www.' + re.sub('(www\\.)|(https?://)', '', url)
     if(url[-1] == '/'): url = url[:-1]
     url_sections = url.split('/')
     if(len(url_sections) < 4):
@@ -439,7 +487,7 @@ def main(url, dst, imgs, vids, start_offs, end_offs, full_hash):
     if(url_sections[-2] == 'post'):
         if(start_offs != None or end_offs != None):
             stdout.write('[main] WARNING: Start and end offsets are ignored when downloading a post.\n')
-        cnt = process_post(url, dst, imgs, vids)
+        cnt = process_post(url, dst, imgs, vids, full_hash)
 
     # Perform downloading of a media
     elif(url_sections[-4] == 'data'):
@@ -525,5 +573,5 @@ if(__name__ == '__main__'):
         os.makedirs(dst)
 
     main(url, dst, not img, not vid, start_offset, end_offset, full_hash)
-    input('---Press enter to exit---')
+    #input('---Press enter to exit---')
     stdout.write('\n')
